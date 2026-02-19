@@ -19,7 +19,8 @@ import { format, getMonth, getYear, subMonths } from 'date-fns'
 import { es } from 'date-fns/locale'
 import { useExpedientes } from '../../context/ExpedientesContext'
 import { useNotifications } from '../../context/NotificationsContext'
-import { VISITADORES, formatDate, sanitizeSpreadsheetCell } from '../../lib/utils'
+import { useProductivity } from '../../context/ProductivityContext'
+import { formatDate, sanitizeSpreadsheetCell } from '../../lib/utils'
 
 type ReportType = 'mensual' | 'trimestral' | 'anual'
 
@@ -115,9 +116,14 @@ function makeXmlRow(values: Array<string | number>) {
     .join('')}</Row>`
 }
 
+function makeWorksheet(name: string, rows: string[]) {
+  return `<Worksheet ss:Name="${xmlEscape(name)}"><Table>${rows.join('')}</Table></Worksheet>`
+}
+
 export function Reportes() {
   const { expedientes } = useExpedientes()
   const { addNotification } = useNotifications()
+  const { visitadoresCatalog } = useProductivity()
   const shouldReduceMotion = useReducedMotion()
 
   const [reportType, setReportType] = useState<ReportType>('mensual')
@@ -125,6 +131,7 @@ export function Reportes() {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear())
   const [exportingPDF, setExportingPDF] = useState(false)
   const [exportingExcel, setExportingExcel] = useState(false)
+  const [exportingExecutive, setExportingExecutive] = useState(false)
 
   const availableYears = useMemo(() => {
     const currentYear = new Date().getFullYear()
@@ -157,7 +164,11 @@ export function Reportes() {
     const pendientes = enPeriodo.length - resueltos
     const tasaResolucion = enPeriodo.length > 0 ? Math.round((resueltos / enPeriodo.length) * 100) : 0
 
-    const byVisitador = VISITADORES.map((visitador) => {
+    const visitadores = Array.from(
+      new Set([...visitadoresCatalog, ...enPeriodo.map((item) => item.visitador_asignado)]),
+    ).filter(Boolean)
+
+    const byVisitador = visitadores.map((visitador) => {
       const visitadorExpedientes = enPeriodo.filter((item) => item.visitador_asignado === visitador)
       const visitadorResueltos = visitadorExpedientes.filter((item) => item.estado === 'Resuelta').length
       const visitadorPendientes = visitadorExpedientes.length - visitadorResueltos
@@ -199,7 +210,7 @@ export function Reportes() {
     }
 
     return { enPeriodo, resueltos, pendientes, tasaResolucion, byVisitador, byEstado, monthly }
-  }, [expedientes, reportType, selectedMonth, selectedYear])
+  }, [expedientes, reportType, selectedMonth, selectedYear, visitadoresCatalog])
 
   const periodLabel =
     reportType === 'anual'
@@ -278,38 +289,105 @@ export function Reportes() {
     }
   }
 
+  const exportExecutive = async () => {
+    setExportingExecutive(true)
+    try {
+      const [{ jsPDF }, { default: autoTable }] = await Promise.all([import('jspdf'), import('jspdf-autotable')])
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+      const width = doc.internal.pageSize.getWidth()
+
+      doc.setFillColor(15, 23, 42)
+      doc.rect(0, 0, width, 34, 'F')
+      doc.setTextColor(255, 255, 255)
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(15)
+      doc.text('CEDHBC - Resumen Ejecutivo', 14, 13)
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(9.5)
+      doc.text(`Periodo: ${periodLabel}`, 14, 21)
+      doc.text(`Emitido: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 27)
+
+      autoTable(doc, {
+        startY: 40,
+        theme: 'grid',
+        styles: { fontSize: 9, cellPadding: 2.5 },
+        headStyles: { fillColor: [30, 41, 59] },
+        head: [['Indicador', 'Valor']],
+        body: [
+          ['Total expedientes', String(reportData.enPeriodo.length)],
+          ['Resueltos', String(reportData.resueltos)],
+          ['Pendientes', String(reportData.pendientes)],
+          ['Tasa de resolucion', `${reportData.tasaResolucion}%`],
+        ],
+      })
+
+      autoTable(doc, {
+        startY: ((doc as { lastAutoTable?: { finalY?: number } }).lastAutoTable?.finalY ?? 70) + 6,
+        theme: 'grid',
+        styles: { fontSize: 8.5, cellPadding: 2.2 },
+        headStyles: { fillColor: [71, 85, 105] },
+        head: [['Visitador', 'Asignados', 'Resueltos', 'Efectividad']],
+        body:
+          reportData.byVisitador.length > 0
+            ? reportData.byVisitador.map((item) => [
+                item.nombre,
+                String(item.asignados),
+                String(item.resueltos),
+                `${item.efectividad}%`,
+              ])
+            : [['Sin datos para el periodo', '-', '-', '-']],
+      })
+
+      doc.save(`CEDHBC_Ejecutivo_${periodLabel.replace(/\s+/g, '_')}.pdf`)
+      addNotification({
+        type: 'success',
+        title: 'Resumen ejecutivo generado',
+        message: `Se exporto el resumen de ${periodLabel}.`,
+      })
+    } catch {
+      addNotification({
+        type: 'error',
+        title: 'No se pudo exportar resumen ejecutivo',
+        message: 'Ocurrio un error al generar el PDF ejecutivo.',
+      })
+    } finally {
+      setExportingExecutive(false)
+    }
+  }
+
   const exportExcel = async () => {
     setExportingExcel(true)
     try {
-      const rows: string[] = []
-      rows.push(makeXmlRow(['CEDHBC - REPORTE DE EXPEDIENTES']))
-      rows.push(makeXmlRow([`Periodo: ${periodLabel} - Generado: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`]))
-      rows.push(makeXmlRow(['']))
-      rows.push(makeXmlRow(['Indicador', 'Valor']))
-      rows.push(makeXmlRow(['Total expedientes', reportData.enPeriodo.length]))
-      rows.push(makeXmlRow(['Resueltos', reportData.resueltos]))
-      rows.push(makeXmlRow(['Pendientes', reportData.pendientes]))
-      rows.push(makeXmlRow(['Tasa de resolucion', `${reportData.tasaResolucion}%`]))
-      rows.push(makeXmlRow(['']))
-      rows.push(makeXmlRow(['Visitador', 'Asignados', 'Resueltos', 'Pendientes', 'Efectividad']))
+      const resumenRows: string[] = []
+      resumenRows.push(makeXmlRow(['CEDHBC - REPORTE DE EXPEDIENTES']))
+      resumenRows.push(makeXmlRow([`Periodo: ${periodLabel}`]))
+      resumenRows.push(makeXmlRow([`Generado: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`]))
+      resumenRows.push(makeXmlRow(['']))
+      resumenRows.push(makeXmlRow(['Indicador', 'Valor']))
+      resumenRows.push(makeXmlRow(['Total expedientes', reportData.enPeriodo.length]))
+      resumenRows.push(makeXmlRow(['Resueltos', reportData.resueltos]))
+      resumenRows.push(makeXmlRow(['Pendientes', reportData.pendientes]))
+      resumenRows.push(makeXmlRow(['Tasa de resolucion', `${reportData.tasaResolucion}%`]))
 
+      const visitadoresRows: string[] = []
+      visitadoresRows.push(makeXmlRow(['Visitador', 'Asignados', 'Resueltos', 'Pendientes', 'Efectividad']))
       if (reportData.byVisitador.length === 0) {
-        rows.push(makeXmlRow(['Sin datos para el periodo']))
+        visitadoresRows.push(makeXmlRow(['Sin datos para el periodo']))
       } else {
         reportData.byVisitador.forEach((item) => {
-          rows.push(
+          visitadoresRows.push(
             makeXmlRow([item.nombre, item.asignados, item.resueltos, item.pendientes, `${item.efectividad}%`]),
           )
         })
       }
 
-      rows.push(makeXmlRow(['']))
-      rows.push(makeXmlRow(['Folio', 'Fecha', 'Derecho', 'Visitador', 'Estado']))
+      const expedientesRows: string[] = []
+      expedientesRows.push(makeXmlRow(['Folio', 'Fecha', 'Derecho', 'Visitador', 'Estado']))
       if (reportData.enPeriodo.length === 0) {
-        rows.push(makeXmlRow(['Sin expedientes en el periodo']))
+        expedientesRows.push(makeXmlRow(['Sin expedientes en el periodo']))
       } else {
         reportData.enPeriodo.forEach((item) => {
-          rows.push(
+          expedientesRows.push(
             makeXmlRow([
               item.folio,
               formatDate(item.fecha_presentacion),
@@ -321,19 +399,20 @@ export function Reportes() {
         })
       }
 
-      rows.push(makeXmlRow(['']))
-      rows.push(makeXmlRow(['Mes', 'Ingresos', 'Resueltos']))
+      const tendenciaRows: string[] = []
+      tendenciaRows.push(makeXmlRow(['Mes', 'Ingresos', 'Resueltos']))
       reportData.monthly.forEach((item) => {
-        rows.push(makeXmlRow([item.mes, item.ingresos, item.resueltos]))
+        tendenciaRows.push(makeXmlRow([item.mes, item.ingresos, item.resueltos]))
       })
 
       const workbookXml = `<?xml version="1.0"?>
 <?mso-application progid="Excel.Sheet"?>
 <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
- <Worksheet ss:Name="Reporte">
-  <Table>${rows.join('')}</Table>
- </Worksheet>
+ ${makeWorksheet('Resumen', resumenRows)}
+ ${makeWorksheet('Visitadores', visitadoresRows)}
+ ${makeWorksheet('Expedientes', expedientesRows)}
+ ${makeWorksheet('Tendencia', tendenciaRows)}
 </Workbook>`
 
       const blob = new Blob([`\uFEFF${workbookXml}`], { type: 'application/vnd.ms-excel;charset=utf-8;' })
@@ -430,6 +509,15 @@ export function Reportes() {
               ))}
             </select>
           </div>
+
+          <button
+            onClick={exportExecutive}
+            disabled={exportingExecutive}
+            className="flex items-center gap-2 rounded-xl bg-blue-700 px-5 py-3 font-medium text-white transition-all duration-300 hover:bg-blue-800 hover:shadow-lg"
+          >
+            <FileText className="h-5 w-5" aria-hidden />
+            {exportingExecutive ? 'Generando ejecutivo...' : 'Resumen Ejecutivo'}
+          </button>
 
           <button
             onClick={exportPDF}

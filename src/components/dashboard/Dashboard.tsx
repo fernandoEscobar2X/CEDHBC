@@ -4,9 +4,11 @@ import {
   Activity,
   AlertCircle,
   CheckCircle2,
+  ClipboardList,
   ChevronRight,
   Clock,
   FileText,
+  Target,
   TrendingUp,
 } from 'lucide-react'
 import {
@@ -24,7 +26,9 @@ import {
 } from 'recharts'
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
+import { useNavigate } from 'react-router-dom'
 import { useExpedientes } from '../../context/ExpedientesContext'
+import { useProductivity } from '../../context/ProductivityContext'
 import { ESTADO_COLORS, cn, daysSince } from '../../lib/utils'
 
 const MONTHS = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
@@ -134,6 +138,8 @@ function inMonth(date: Date, month: number, year: number) {
 
 export function Dashboard() {
   const { expedientes, loading } = useExpedientes()
+  const { nextActions } = useProductivity()
+  const navigate = useNavigate()
   const shouldReduceMotion = useReducedMotion()
 
   const data = useMemo(() => {
@@ -209,6 +215,67 @@ export function Dashboard() {
               : 'bg-purple-500',
     }))
 
+    const nowDate = new Date()
+    const today = nowDate.toISOString().split('T')[0]
+    const openCases = expedientes.filter((item) => abiertos(item.estado))
+    const totalOpen = openCases.length
+
+    const queueItems = openCases
+      .map((item) => {
+        const action = nextActions[item.id]
+        const staleDays = daysSince(item.fecha_ultimo_movimiento)
+        const overdue = action ? action.dueDate < today && !action.completed : false
+        const dueToday = action ? action.dueDate === today && !action.completed : false
+        const noAction = !action
+
+        const priority = overdue ? 0 : dueToday ? 1 : noAction ? 2 : staleDays >= 30 ? 3 : 4
+        const kind = overdue
+          ? 'overdue'
+          : dueToday
+            ? 'today'
+            : noAction
+              ? 'missing'
+              : staleDays >= 30
+                ? 'stale'
+                : 'planned'
+
+        return {
+          id: item.id,
+          folio: item.folio,
+          visitador: item.visitador_asignado,
+          kind,
+          priority,
+          detail:
+            kind === 'overdue'
+              ? `Vencida: ${action?.text}`
+              : kind === 'today'
+                ? `Hoy: ${action?.text}`
+                : kind === 'missing'
+                  ? 'Sin proxima accion asignada'
+                  : kind === 'stale'
+                    ? `Sin movimiento ${staleDays} dias`
+                    : action?.text ?? 'Planificado',
+          dueDate: action?.dueDate ?? null,
+          completed: action?.completed ?? false,
+        }
+      })
+      .sort((a, b) => a.priority - b.priority)
+
+    const actionableToday = queueItems.filter((item) => ['overdue', 'today', 'missing', 'stale'].includes(item.kind))
+    const completedActions = Object.values(nextActions).filter((item) => item.completed).length
+    const overdueActions = queueItems.filter((item) => item.kind === 'overdue').length
+    const avgResolutionDays = (() => {
+      const resolved = expedientes.filter((item) => item.estado === 'Resuelta')
+      if (resolved.length === 0) return 0
+      const totalDays = resolved.reduce((sum, item) => {
+        const created = new Date(item.created_at)
+        const updated = new Date(item.updated_at)
+        const diff = Math.max(0, Math.floor((updated.getTime() - created.getTime()) / (1000 * 60 * 60 * 24)))
+        return sum + diff
+      }, 0)
+      return Math.round(totalDays / resolved.length)
+    })()
+
     return {
       casesMonth,
       resolvedMonth,
@@ -218,6 +285,14 @@ export function Dashboard() {
       estadoData,
       recent,
       activity,
+      queue: actionableToday.slice(0, 8),
+      productivity: {
+        totalOpen,
+        backlogWithoutAction: queueItems.filter((item) => item.kind === 'missing').length,
+        completedActions,
+        overdueActions,
+        avgResolutionDays,
+      },
       trends: {
         cases: trendLabel(casesMonth, casesMonthPrev),
         resolved: trendLabel(resolvedMonth, resolvedMonthPrev),
@@ -225,7 +300,7 @@ export function Dashboard() {
         urgent: trendLabel(urgentCurrent, urgentPrev),
       },
     }
-  }, [expedientes])
+  }, [expedientes, nextActions])
 
   const statCards = [
     {
@@ -288,6 +363,78 @@ export function Dashboard() {
           </p>
         </div>
       </div>
+
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+          <div className="mb-3 flex items-center gap-2">
+            <ClipboardList className="h-4 w-4 text-blue-600" />
+            <h2 className="text-sm font-semibold text-slate-900">Bandeja de Hoy</h2>
+          </div>
+          {data.queue.length === 0 ? (
+            <p className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">
+              Sin pendientes criticos para hoy.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {data.queue.slice(0, 4).map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => navigate('/expedientes')}
+                  className={cn(
+                    'flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left transition-colors',
+                    item.kind === 'overdue'
+                      ? 'border-red-200 bg-red-50'
+                      : item.kind === 'today'
+                        ? 'border-blue-200 bg-blue-50'
+                        : item.kind === 'missing'
+                          ? 'border-amber-200 bg-amber-50'
+                          : 'border-slate-200 bg-slate-50',
+                  )}
+                >
+                  <div className="min-w-0">
+                    <p className="truncate font-mono text-xs font-semibold text-slate-800">{item.folio}</p>
+                    <p className="truncate text-xs text-slate-600">{item.detail}</p>
+                  </div>
+                  <ChevronRight className="h-4 w-4 text-slate-400" />
+                </button>
+              ))}
+            </div>
+          )}
+        </article>
+
+        <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-3 flex items-center gap-2">
+            <Target className="h-4 w-4 text-purple-600" />
+            <h2 className="text-sm font-semibold text-slate-900">Acciones Rapidas</h2>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => navigate('/nuevo')}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100"
+            >
+              Nuevo caso
+            </button>
+            <button
+              onClick={() => navigate('/expedientes')}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100"
+            >
+              Buscar caso
+            </button>
+            <button
+              onClick={() => navigate('/reportes')}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100"
+            >
+              Reportes
+            </button>
+            <button
+              onClick={() => navigate('/expedientes?q=')}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100"
+            >
+              Bandeja hoy
+            </button>
+          </div>
+        </article>
+      </section>
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
         {statCards.map((card, idx) => (
@@ -484,6 +631,25 @@ export function Dashboard() {
           )}
         </motion.section>
       </div>
+
+      <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-xs text-slate-500">Backlog abierto</p>
+          <p className="mt-1 text-2xl font-bold text-slate-900">{data.productivity.totalOpen}</p>
+        </article>
+        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-xs text-slate-500">Sin proxima accion</p>
+          <p className="mt-1 text-2xl font-bold text-amber-700">{data.productivity.backlogWithoutAction}</p>
+        </article>
+        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-xs text-slate-500">Acciones vencidas</p>
+          <p className="mt-1 text-2xl font-bold text-red-700">{data.productivity.overdueActions}</p>
+        </article>
+        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-xs text-slate-500">Resolucion promedio</p>
+          <p className="mt-1 text-2xl font-bold text-slate-900">{data.productivity.avgResolutionDays} d</p>
+        </article>
+      </section>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         <motion.section

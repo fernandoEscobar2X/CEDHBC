@@ -18,12 +18,12 @@ import { format } from 'date-fns'
 import { useAuth } from '../../context/AuthContext'
 import { useExpedientes } from '../../context/ExpedientesContext'
 import { useNotifications } from '../../context/NotificationsContext'
+import { useProductivity, type ProfileSettings, type TogglePreference } from '../../context/ProductivityContext'
 import {
   cn,
   DERECHOS,
   ESTADOS,
   FIELD_LIMITS,
-  VISITADORES,
   getMesRegistro,
   isValidFolio,
   normalizeFolio,
@@ -33,67 +33,14 @@ import type { ExpedienteInsert, EstadoExpediente } from '../../types/database'
 
 type Section = 'perfil' | 'catalogos' | 'notificaciones' | 'sistema' | 'respaldos'
 
-interface Toggle {
-  label: string
-  description: string
-  enabled: boolean
-}
-
-interface ProfileSettings {
-  fullName: string
-  position: string
-}
-
 interface ToggleRowProps {
   id: string
-  item: Toggle
+  item: TogglePreference
   onToggle: () => void
 }
 
-const STORAGE_KEYS = {
-  profile: 'cedhbc_settings_profile',
-  notifications: 'cedhbc_settings_notifications',
-  system: 'cedhbc_settings_system',
-  visitadores: 'cedhbc_settings_visitadores',
-}
-
-const DEFAULT_PROFILE: ProfileSettings = {
-  fullName: 'Administrador CEDHBC',
-  position: 'Administrador',
-}
-
-const DEFAULT_NOTIFICATIONS: Toggle[] = [
-  { label: 'Notificaciones de expedientes nuevos', description: 'Alerta al registrar nuevos casos', enabled: true },
-  { label: 'Notificaciones de cambios de estado', description: 'Aviso cuando un caso cambia de estado', enabled: true },
-  { label: 'Notificaciones de vencimientos', description: 'Alerta para casos con mas de 30 dias sin movimiento', enabled: true },
-  { label: 'Notificaciones de actividad', description: 'Actualizaciones relevantes del sistema', enabled: true },
-]
-
-const DEFAULT_SYSTEM: Toggle[] = [
-  { label: 'Validar folios duplicados', description: 'Bloquear folios repetidos en el registro', enabled: true },
-  { label: 'Folio automatico', description: 'Sugerir folio consecutivo en nuevos expedientes', enabled: true },
-  { label: 'Confirmar salida con cambios', description: 'Mostrar confirmacion antes de salir de un formulario', enabled: false },
-]
 const MAX_BACKUP_FILE_BYTES = 5 * 1024 * 1024
 const MAX_BACKUP_RECORDS = 5000
-
-function readStored<T>(key: string, fallback: T): T {
-  if (typeof window === 'undefined') return fallback
-
-  try {
-    const raw = window.localStorage.getItem(key)
-    if (!raw) return fallback
-    const parsed = JSON.parse(raw) as T
-    return parsed ?? fallback
-  } catch {
-    return fallback
-  }
-}
-
-function writeStored<T>(key: string, value: T) {
-  if (typeof window === 'undefined') return
-  window.localStorage.setItem(key, JSON.stringify(value))
-}
 
 function sanitizeDate(value: unknown) {
   const fallback = new Date().toISOString().split('T')[0]
@@ -123,7 +70,7 @@ function sanitizeEstado(value: unknown): EstadoExpediente {
   return 'Admitida'
 }
 
-function parseBackupRecords(raw: unknown): ExpedienteInsert[] {
+function parseBackupRecords(raw: unknown, fallbackVisitador: string): ExpedienteInsert[] {
   const source = (() => {
     if (Array.isArray(raw)) return raw
     if (raw && typeof raw === 'object' && Array.isArray((raw as { expedientes?: unknown[] }).expedientes)) {
@@ -142,7 +89,7 @@ function parseBackupRecords(raw: unknown): ExpedienteInsert[] {
       const fechaUltimoMovimiento = sanitizeDate(record.fecha_ultimo_movimiento ?? fechaPresentacion)
       const tipoDerecho = normalizeWhitespace(String(record.tipo_derecho ?? 'Otro')).slice(0, FIELD_LIMITS.tipoDerecho)
       const autoridad = normalizeWhitespace(String(record.autoridad_responsable ?? 'No especificada')).slice(0, FIELD_LIMITS.autoridad)
-      const visitador = normalizeWhitespace(String(record.visitador_asignado ?? VISITADORES[0])).slice(0, FIELD_LIMITS.visitador)
+      const visitador = normalizeWhitespace(String(record.visitador_asignado ?? fallbackVisitador)).slice(0, FIELD_LIMITS.visitador)
       const estado = sanitizeEstado(record.estado)
       const notas = String(record.notas_seguimiento ?? '').trim().slice(0, FIELD_LIMITS.notas)
 
@@ -186,9 +133,7 @@ function ToggleRow({ id, item, onToggle }: ToggleRowProps) {
         className={cn(
           'relative h-6 w-11 flex-shrink-0 rounded-full border transition-colors duration-200',
           'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
-          item.enabled
-            ? 'border-blue-500 bg-blue-600'
-            : 'border-slate-300 bg-slate-300',
+          item.enabled ? 'border-blue-500 bg-blue-600' : 'border-slate-300 bg-slate-300',
         )}
       >
         <span
@@ -207,24 +152,36 @@ export function Configuracion() {
   const { user } = useAuth()
   const { expedientes, createExpediente, refetch } = useExpedientes()
   const { addNotification } = useNotifications()
+  const {
+    loading,
+    profile: persistedProfile,
+    notificationPrefs: persistedNotifs,
+    systemPrefs: persistedSystem,
+    visitadoresCatalog: persistedVisitadores,
+    setProfile,
+    setNotificationPrefs,
+    setSystemPrefs,
+    setVisitadoresCatalog,
+  } = useProductivity()
   const shouldReduceMotion = useReducedMotion()
 
   const [section, setSection] = useState<Section>('perfil')
   const [saved, setSaved] = useState(false)
   const [importing, setImporting] = useState(false)
-  const [profile, setProfile] = useState<ProfileSettings>(() => readStored(STORAGE_KEYS.profile, DEFAULT_PROFILE))
-  const [notifs, setNotifs] = useState<Toggle[]>(() => readStored(STORAGE_KEYS.notifications, DEFAULT_NOTIFICATIONS))
-  const [sistema, setSistema] = useState<Toggle[]>(() => readStored(STORAGE_KEYS.system, DEFAULT_SYSTEM))
-  const [visitadoresCatalog, setVisitadoresCatalog] = useState<string[]>(() =>
-    readStored(STORAGE_KEYS.visitadores, VISITADORES),
+  const [profile, setProfileDraft] = useState<ProfileSettings>(persistedProfile)
+  const [notifs, setNotifsDraft] = useState<TogglePreference[]>(persistedNotifs)
+  const [sistema, setSistemaDraft] = useState<TogglePreference[]>(persistedSystem)
+  const [visitadoresCatalog, setVisitadoresCatalogDraft] = useState<string[]>(persistedVisitadores)
+
+  useEffect(() => setProfileDraft(persistedProfile), [persistedProfile])
+  useEffect(() => setNotifsDraft(persistedNotifs), [persistedNotifs])
+  useEffect(() => setSistemaDraft(persistedSystem), [persistedSystem])
+  useEffect(() => setVisitadoresCatalogDraft(persistedVisitadores), [persistedVisitadores])
+
+  const canSaveProfile = useMemo(
+    () => profile.fullName.trim().length > 2 && profile.position.trim().length > 1,
+    [profile],
   )
-
-  useEffect(() => writeStored(STORAGE_KEYS.profile, profile), [profile])
-  useEffect(() => writeStored(STORAGE_KEYS.notifications, notifs), [notifs])
-  useEffect(() => writeStored(STORAGE_KEYS.system, sistema), [sistema])
-  useEffect(() => writeStored(STORAGE_KEYS.visitadores, visitadoresCatalog), [visitadoresCatalog])
-
-  const canSaveProfile = useMemo(() => profile.fullName.trim().length > 2 && profile.position.trim().length > 1, [profile])
 
   const handleSave = () => {
     if (section === 'perfil' && !canSaveProfile) {
@@ -236,11 +193,16 @@ export function Configuracion() {
       return
     }
 
+    if (section === 'perfil') setProfile(profile)
+    if (section === 'notificaciones') setNotificationPrefs(notifs)
+    if (section === 'sistema') setSystemPrefs(sistema)
+    if (section === 'catalogos') setVisitadoresCatalog(visitadoresCatalog)
+
     setSaved(true)
     addNotification({
       type: 'success',
-      title: 'Configuracion guardada',
-      message: `Los cambios en ${section} se guardaron correctamente.`,
+      title: 'Configuracion guardada en la nube',
+      message: `Los cambios en ${section} se sincronizaron correctamente.`,
     })
     window.setTimeout(() => setSaved(false), 1800)
   }
@@ -283,7 +245,7 @@ export function Configuracion() {
     try {
       const raw = await file.text()
       const parsed = JSON.parse(raw) as unknown
-      const parsedRecords = parseBackupRecords(parsed)
+      const parsedRecords = parseBackupRecords(parsed, visitadoresCatalog[0] ?? 'Visitador General I')
       const records = parsedRecords.slice(0, MAX_BACKUP_RECORDS)
 
       if (parsedRecords.length > MAX_BACKUP_RECORDS) {
@@ -358,7 +320,9 @@ export function Configuracion() {
       return
     }
 
-    setVisitadoresCatalog((prev) => [...prev, clean])
+    const next = [...visitadoresCatalog, clean]
+    setVisitadoresCatalogDraft(next)
+    setVisitadoresCatalog(next)
     addNotification({
       type: 'success',
       title: 'Visitador agregado',
@@ -368,10 +332,10 @@ export function Configuracion() {
 
   const handleEditVisitador = (index: number) => {
     const current = visitadoresCatalog[index]
-    const next = window.prompt('Editar nombre del visitador:', current)
-    if (!next) return
+    const nextName = window.prompt('Editar nombre del visitador:', current)
+    if (!nextName) return
 
-    const clean = next.trim()
+    const clean = normalizeWhitespace(nextName).slice(0, FIELD_LIMITS.visitador)
     if (!clean) return
 
     if (
@@ -387,7 +351,9 @@ export function Configuracion() {
       return
     }
 
-    setVisitadoresCatalog((prev) => prev.map((item, itemIndex) => (itemIndex === index ? clean : item)))
+    const next = visitadoresCatalog.map((item, itemIndex) => (itemIndex === index ? clean : item))
+    setVisitadoresCatalogDraft(next)
+    setVisitadoresCatalog(next)
     addNotification({
       type: 'info',
       title: 'Visitador actualizado',
@@ -410,7 +376,9 @@ export function Configuracion() {
 
     if (!window.confirm(`Eliminar "${target}" del catalogo?`)) return
 
-    setVisitadoresCatalog((prev) => prev.filter((_, itemIndex) => itemIndex !== index))
+    const next = visitadoresCatalog.filter((_, itemIndex) => itemIndex !== index)
+    setVisitadoresCatalogDraft(next)
+    setVisitadoresCatalog(next)
     addNotification({
       type: 'warning',
       title: 'Visitador eliminado',
@@ -430,7 +398,7 @@ export function Configuracion() {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-slate-900">Configuracion</h1>
-        <p className="mt-1 text-slate-600">Preferencias de perfil, catalogos y parametros del sistema</p>
+        <p className="mt-1 text-slate-600">Preferencias sincronizadas en la nube para cualquier dispositivo</p>
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
@@ -443,9 +411,7 @@ export function Configuracion() {
                   onClick={() => setSection(s.id)}
                   className={cn(
                     'flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left font-medium transition-all duration-300',
-                    section === s.id
-                      ? 'bg-blue-700 text-white shadow-lg'
-                      : 'text-slate-700 hover:bg-slate-100',
+                    section === s.id ? 'bg-blue-700 text-white shadow-lg' : 'text-slate-700 hover:bg-slate-100',
                   )}
                 >
                   <s.icon className="h-5 w-5" aria-hidden />
@@ -463,6 +429,12 @@ export function Configuracion() {
           transition={shouldReduceMotion ? { duration: 0 } : { duration: 0.2 }}
           className="lg:col-span-3 rounded-2xl border border-slate-200 bg-white p-6 shadow-lg"
         >
+          {loading ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+              Cargando configuracion...
+            </div>
+          ) : null}
+
           {section === 'perfil' && (
             <div className="space-y-6">
               <h2 className="text-xl font-bold text-slate-900">Informacion del Perfil</h2>
@@ -491,7 +463,7 @@ export function Configuracion() {
                     id="perfil-nombre"
                     value={profile.fullName}
                     maxLength={120}
-                    onChange={(e) => setProfile((prev) => ({ ...prev, fullName: e.target.value.slice(0, 120) }))}
+                    onChange={(e) => setProfileDraft((prev) => ({ ...prev, fullName: e.target.value.slice(0, 120) }))}
                     className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
@@ -503,7 +475,7 @@ export function Configuracion() {
                     id="perfil-cargo"
                     value={profile.position}
                     maxLength={120}
-                    onChange={(e) => setProfile((prev) => ({ ...prev, position: e.target.value.slice(0, 120) }))}
+                    onChange={(e) => setProfileDraft((prev) => ({ ...prev, position: e.target.value.slice(0, 120) }))}
                     className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
@@ -527,7 +499,7 @@ export function Configuracion() {
               <div className="flex items-center justify-between gap-2">
                 <div>
                   <h2 className="text-xl font-bold text-slate-900">Catalogos del Sistema</h2>
-                  <p className="text-sm text-slate-600">Listas maestras para clasificacion y asignacion de casos.</p>
+                  <p className="text-sm text-slate-600">Listas maestras sincronizadas para clasificacion y asignacion.</p>
                 </div>
                 <button
                   onClick={handleAddVisitador}
@@ -604,7 +576,7 @@ export function Configuracion() {
                     id={`notif-toggle-${i}`}
                     item={item}
                     onToggle={() =>
-                      setNotifs((prev) => prev.map((row, idx) => (idx === i ? { ...row, enabled: !row.enabled } : row)))
+                      setNotifsDraft((prev) => prev.map((row, idx) => (idx === i ? { ...row, enabled: !row.enabled } : row)))
                     }
                   />
                 ))}
@@ -623,7 +595,7 @@ export function Configuracion() {
                     id={`system-toggle-${i}`}
                     item={item}
                     onToggle={() =>
-                      setSistema((prev) => prev.map((row, idx) => (idx === i ? { ...row, enabled: !row.enabled } : row)))
+                      setSistemaDraft((prev) => prev.map((row, idx) => (idx === i ? { ...row, enabled: !row.enabled } : row)))
                     }
                   />
                 ))}

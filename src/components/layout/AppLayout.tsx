@@ -22,6 +22,7 @@ import {
 import { useAuth } from '../../context/AuthContext'
 import { useNotifications } from '../../context/NotificationsContext'
 import { useExpedientes } from '../../context/ExpedientesContext'
+import { useProductivity } from '../../context/ProductivityContext'
 import { cn } from '../../lib/utils'
 import { format, formatDistanceToNow, isThisWeek, isToday, isYesterday } from 'date-fns'
 import { es } from 'date-fns/locale'
@@ -71,11 +72,13 @@ const FOCUSABLE_SELECTOR =
 const SYSTEM_NOTIF_IDS = {
   staleCases: 'system-stale-cases',
   createdToday: 'system-created-today',
+  dailyPlanner: 'system-daily-planner',
 }
 
 export function AppLayout() {
   const { user, signOut } = useAuth()
   const { expedientes, loading: expedientesLoading } = useExpedientes()
+  const { nextActions } = useProductivity()
   const {
     notifications,
     unreadCount,
@@ -158,7 +161,35 @@ export function AppLayout() {
     } else {
       removeNotification(SYSTEM_NOTIF_IDS.createdToday)
     }
-  }, [expedientes, expedientesLoading, upsertSystemNotification, removeNotification])
+
+    const today = new Date().toISOString().split('T')[0]
+    const openCases = expedientes.filter((exp) => abiertos(exp.estado))
+    const overdueActions = openCases.filter((exp) => {
+      const action = nextActions[exp.id]
+      return action && !action.completed && action.dueDate < today
+    }).length
+    const dueTodayActions = openCases.filter((exp) => {
+      const action = nextActions[exp.id]
+      return action && !action.completed && action.dueDate === today
+    }).length
+    const missingActions = openCases.filter((exp) => !nextActions[exp.id]).length
+
+    if (overdueActions > 0 || dueTodayActions > 0 || missingActions > 0) {
+      const pieces = [
+        overdueActions > 0 ? `${overdueActions} vencidas` : null,
+        dueTodayActions > 0 ? `${dueTodayActions} para hoy` : null,
+        missingActions > 0 ? `${missingActions} sin accion` : null,
+      ].filter(Boolean)
+
+      upsertSystemNotification(SYSTEM_NOTIF_IDS.dailyPlanner, {
+        type: overdueActions > 0 ? 'warning' : 'info',
+        title: 'Agenda diaria',
+        message: `Pendientes de hoy: ${pieces.join(', ')}.`,
+      })
+    } else {
+      removeNotification(SYSTEM_NOTIF_IDS.dailyPlanner)
+    }
+  }, [expedientes, expedientesLoading, upsertSystemNotification, removeNotification, nextActions])
 
   useEffect(() => {
     if (!notifOpen) return
@@ -338,10 +369,34 @@ export function AppLayout() {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
+        <main className="flex-1 overflow-y-auto p-4 pb-24 sm:p-6 sm:pb-24 lg:p-8 lg:pb-8">
           <Outlet />
         </main>
       </div>
+
+      <nav
+        className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-200 bg-white/95 px-3 py-2 shadow-2xl backdrop-blur-sm lg:hidden"
+        aria-label="Accesos rapidos"
+      >
+        <div className="mx-auto grid max-w-md grid-cols-4 gap-2">
+          {NAV_ITEMS.slice(0, 4).map((item) => (
+            <NavLink
+              key={`mobile-${item.to}`}
+              to={item.to}
+              end={item.end}
+              className={({ isActive }) =>
+                cn(
+                  'flex flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] font-semibold transition-colors',
+                  isActive ? 'bg-blue-700 text-white' : 'text-slate-600 hover:bg-slate-100',
+                )
+              }
+            >
+              <item.icon className="h-4 w-4" aria-hidden />
+              <span className="truncate">{item.label.replace('Panel ', '')}</span>
+            </NavLink>
+          ))}
+        </div>
+      </nav>
 
       <AnimatePresence>
         {notifOpen && (

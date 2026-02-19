@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { ExpedientesProvider } from './context/ExpedientesContext'
 import { NotificationsProvider } from './context/NotificationsContext'
+import { ProductivityProvider } from './context/ProductivityContext'
 import { ProtectedRoute } from './components/auth/ProtectedRoute'
 import { LoginPage } from './components/auth/LoginPage'
 import { AppLayout } from './components/layout/AppLayout'
@@ -23,7 +24,9 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <ExpedientesProvider>
-                    <AppLayout />
+                    <ProductivityProvider>
+                      <AppLayout />
+                    </ProductivityProvider>
                   </ExpedientesProvider>
                 </ProtectedRoute>
               }

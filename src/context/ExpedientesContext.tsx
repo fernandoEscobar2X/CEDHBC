@@ -18,8 +18,8 @@ interface ExpedientesContextType {
   loading: boolean
   error: string | null
   refetch: () => Promise<void>
-  createExpediente: (data: ExpedienteInsert) => Promise<{ error: string | null }>
-  updateExpediente: (id: string, data: ExpedienteUpdate) => Promise<{ error: string | null }>
+  createExpediente: (data: ExpedienteInsert) => Promise<{ error: string | null; data: Expediente | null }>
+  updateExpediente: (id: string, data: ExpedienteUpdate) => Promise<{ error: string | null; data: Expediente | null }>
   deleteExpediente: (id: string) => Promise<{ error: string | null }>
 }
 
@@ -255,43 +255,47 @@ export function ExpedientesProvider({ children }: { children: ReactNode }) {
   const createExpediente = async (data: ExpedienteInsert) => {
     const { payload, error: validationError } = normalizeCreatePayload(data)
     if (validationError || !payload) {
-      return { error: validationError ?? 'Datos invalidos para crear expediente.' }
+      return { error: validationError ?? 'Datos invalidos para crear expediente.', data: null }
     }
 
     const duplicate = expedientes.some(
       (item) => item.folio.toUpperCase() === payload.folio.toUpperCase(),
     )
     if (duplicate) {
-      return { error: `El folio ${payload.folio} ya existe.` }
+      return { error: `El folio ${payload.folio} ya existe.`, data: null }
     }
 
     try {
-      const { error: insertError } = await supabase.from(TABLE_NAME).insert([payload] as never)
+      const { data: inserted, error: insertError } = await supabase
+        .from(TABLE_NAME)
+        .insert([payload] as never)
+        .select('*')
+        .single()
       if (insertError) {
         const message = insertError.code === '23505' ? 'El folio ya existe en base de datos.' : insertError.message
-        return { error: message }
+        return { error: message, data: null }
       }
 
       await fetchExpedientes()
-      return { error: null }
+      return { error: null, data: (inserted as Expediente) ?? null }
     } catch {
-      return { error: 'No se pudo crear el expediente por un error de red.' }
+      return { error: 'No se pudo crear el expediente por un error de red.', data: null }
     }
   }
 
   const updateExpediente = async (id: string, data: ExpedienteUpdate) => {
     if (!isUuid(id)) {
-      return { error: 'Identificador de expediente invalido.' }
+      return { error: 'Identificador de expediente invalido.', data: null }
     }
 
     const current = expedientes.find((item) => item.id === id)
     if (!current) {
-      return { error: 'No se encontro el expediente a actualizar.' }
+      return { error: 'No se encontro el expediente a actualizar.', data: null }
     }
 
     const { payload, error: validationError } = normalizeUpdatePayload(data)
     if (validationError || !payload) {
-      return { error: validationError ?? 'Datos invalidos para actualizar expediente.' }
+      return { error: validationError ?? 'Datos invalidos para actualizar expediente.', data: null }
     }
 
     if (payload.folio) {
@@ -299,7 +303,7 @@ export function ExpedientesProvider({ children }: { children: ReactNode }) {
         (item) => item.id !== id && item.folio.toUpperCase() === payload.folio?.toUpperCase(),
       )
       if (duplicate) {
-        return { error: `El folio ${payload.folio} ya existe.` }
+        return { error: `El folio ${payload.folio} ya existe.`, data: null }
       }
     }
 
@@ -309,23 +313,29 @@ export function ExpedientesProvider({ children }: { children: ReactNode }) {
     if (nextFechaMovimiento < nextFechaPresentacion) {
       return {
         error: 'La fecha de ultimo movimiento no puede ser anterior a la fecha de presentacion.',
+        data: null,
       }
     }
     if (isFutureDate(nextFechaMovimiento)) {
-      return { error: 'La fecha de ultimo movimiento no puede ser futura.' }
+      return { error: 'La fecha de ultimo movimiento no puede ser futura.', data: null }
     }
 
     try {
-      const { error: updateError } = await supabase.from(TABLE_NAME).update(payload as never).eq('id', id)
+      const { data: updated, error: updateError } = await supabase
+        .from(TABLE_NAME)
+        .update(payload as never)
+        .eq('id', id)
+        .select('*')
+        .single()
       if (updateError) {
         const message = updateError.code === '23505' ? 'El folio ya existe en base de datos.' : updateError.message
-        return { error: message }
+        return { error: message, data: null }
       }
 
       await fetchExpedientes()
-      return { error: null }
+      return { error: null, data: (updated as Expediente) ?? null }
     } catch {
-      return { error: 'No se pudo actualizar el expediente por un error de red.' }
+      return { error: 'No se pudo actualizar el expediente por un error de red.', data: null }
     }
   }
 

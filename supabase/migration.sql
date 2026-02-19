@@ -189,6 +189,171 @@ CREATE POLICY docs_auth_delete
   TO authenticated
   USING (bucket_id = 'expedientes-documentos');
 
+-- ==========================================
+-- Productivity and user preferences
+-- ==========================================
+
+-- Next action per expediente and user.
+CREATE TABLE IF NOT EXISTS public.expediente_next_actions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE,
+  expediente_id UUID NOT NULL REFERENCES public.expedientes (id) ON DELETE CASCADE,
+  action_text TEXT NOT NULL,
+  due_date DATE NOT NULL,
+  completed BOOLEAN NOT NULL DEFAULT false,
+  completed_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, expediente_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_next_actions_user_due
+  ON public.expediente_next_actions (user_id, due_date);
+
+DROP TRIGGER IF EXISTS set_updated_at_next_actions ON public.expediente_next_actions;
+CREATE TRIGGER set_updated_at_next_actions
+  BEFORE UPDATE ON public.expediente_next_actions
+  FOR EACH ROW
+  EXECUTE FUNCTION public.update_updated_at();
+
+ALTER TABLE public.expediente_next_actions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS next_actions_auth_select ON public.expediente_next_actions;
+CREATE POLICY next_actions_auth_select
+  ON public.expediente_next_actions
+  FOR SELECT
+  TO authenticated
+  USING (user_id = auth.uid());
+
+DROP POLICY IF EXISTS next_actions_auth_insert ON public.expediente_next_actions;
+CREATE POLICY next_actions_auth_insert
+  ON public.expediente_next_actions
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (user_id = auth.uid());
+
+DROP POLICY IF EXISTS next_actions_auth_update ON public.expediente_next_actions;
+CREATE POLICY next_actions_auth_update
+  ON public.expediente_next_actions
+  FOR UPDATE
+  TO authenticated
+  USING (user_id = auth.uid())
+  WITH CHECK (user_id = auth.uid());
+
+DROP POLICY IF EXISTS next_actions_auth_delete ON public.expediente_next_actions;
+CREATE POLICY next_actions_auth_delete
+  ON public.expediente_next_actions
+  FOR DELETE
+  TO authenticated
+  USING (user_id = auth.uid());
+
+-- Persistent UI preferences by authenticated user.
+CREATE TABLE IF NOT EXISTS public.user_preferences (
+  user_id UUID PRIMARY KEY REFERENCES auth.users (id) ON DELETE CASCADE,
+  profile_full_name TEXT NOT NULL DEFAULT 'Administrador CEDHBC',
+  profile_position TEXT NOT NULL DEFAULT 'Administrador',
+  notifications_prefs JSONB NOT NULL DEFAULT '[]'::jsonb,
+  system_prefs JSONB NOT NULL DEFAULT '[]'::jsonb,
+  visitadores_catalog JSONB NOT NULL DEFAULT '[]'::jsonb,
+  templates JSONB NOT NULL DEFAULT '[]'::jsonb,
+  saved_filters JSONB NOT NULL DEFAULT '[]'::jsonb,
+  drafts JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS set_updated_at_user_preferences ON public.user_preferences;
+CREATE TRIGGER set_updated_at_user_preferences
+  BEFORE UPDATE ON public.user_preferences
+  FOR EACH ROW
+  EXECUTE FUNCTION public.update_updated_at();
+
+ALTER TABLE public.user_preferences ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS user_preferences_auth_select ON public.user_preferences;
+CREATE POLICY user_preferences_auth_select
+  ON public.user_preferences
+  FOR SELECT
+  TO authenticated
+  USING (user_id = auth.uid());
+
+DROP POLICY IF EXISTS user_preferences_auth_insert ON public.user_preferences;
+CREATE POLICY user_preferences_auth_insert
+  ON public.user_preferences
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (user_id = auth.uid());
+
+DROP POLICY IF EXISTS user_preferences_auth_update ON public.user_preferences;
+CREATE POLICY user_preferences_auth_update
+  ON public.user_preferences
+  FOR UPDATE
+  TO authenticated
+  USING (user_id = auth.uid())
+  WITH CHECK (user_id = auth.uid());
+
+DROP POLICY IF EXISTS user_preferences_auth_delete ON public.user_preferences;
+CREATE POLICY user_preferences_auth_delete
+  ON public.user_preferences
+  FOR DELETE
+  TO authenticated
+  USING (user_id = auth.uid());
+
+-- Persistent notifications center by user.
+CREATE TABLE IF NOT EXISTS public.user_notifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE,
+  client_id TEXT,
+  type TEXT NOT NULL CHECK (type IN ('success', 'warning', 'info', 'error')),
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  read BOOLEAN NOT NULL DEFAULT false,
+  timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, client_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_notifications_user_timestamp
+  ON public.user_notifications (user_id, timestamp DESC);
+
+DROP TRIGGER IF EXISTS set_updated_at_user_notifications ON public.user_notifications;
+CREATE TRIGGER set_updated_at_user_notifications
+  BEFORE UPDATE ON public.user_notifications
+  FOR EACH ROW
+  EXECUTE FUNCTION public.update_updated_at();
+
+ALTER TABLE public.user_notifications ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS user_notifications_auth_select ON public.user_notifications;
+CREATE POLICY user_notifications_auth_select
+  ON public.user_notifications
+  FOR SELECT
+  TO authenticated
+  USING (user_id = auth.uid());
+
+DROP POLICY IF EXISTS user_notifications_auth_insert ON public.user_notifications;
+CREATE POLICY user_notifications_auth_insert
+  ON public.user_notifications
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (user_id = auth.uid());
+
+DROP POLICY IF EXISTS user_notifications_auth_update ON public.user_notifications;
+CREATE POLICY user_notifications_auth_update
+  ON public.user_notifications
+  FOR UPDATE
+  TO authenticated
+  USING (user_id = auth.uid())
+  WITH CHECK (user_id = auth.uid());
+
+DROP POLICY IF EXISTS user_notifications_auth_delete ON public.user_notifications;
+CREATE POLICY user_notifications_auth_delete
+  ON public.user_notifications
+  FOR DELETE
+  TO authenticated
+  USING (user_id = auth.uid());
+
 -- Optional seed (do not use in production).
 -- INSERT INTO public.expedientes (
 --   folio,
